@@ -13,6 +13,24 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import brier_score_loss, log_loss
 
+# Reliability diagrams and WP trajectories are saved as PNGs at this DPI.
+FIG_DPI = 110
+
+
+def _pyplot():
+    """Return a headless (Agg) ``matplotlib.pyplot``.
+
+    Imported lazily inside this helper (not at module scope) so the showcase
+    notebook can import ``evaluate`` for its pure metric functions without
+    pulling in matplotlib.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
 
 def evaluate_probs(y_true, y_prob) -> dict:
     """Core probabilistic metrics for a set of predictions.
@@ -92,10 +110,7 @@ def plot_calibration(curves: dict, out_path) -> None:
 
     ``curves`` maps model name -> calibration_table DataFrame.
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    plt = _pyplot()
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot([0, 1], [0, 1], "k--", lw=1, label="perfect")
@@ -108,7 +123,7 @@ def plot_calibration(curves: dict, out_path) -> None:
     ax.set_ylim(0, 1)
     ax.legend(loc="upper left")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=110)
+    fig.savefig(out_path, dpi=FIG_DPI)
     plt.close(fig)
 
 
@@ -122,10 +137,7 @@ def plot_wp_trajectory(traj_df: pd.DataFrame, out_path, title: str, team: str) -
     ``wp``, others use ``1 - wp``. The x axis is a global delivery index across
     both innings (``ball_seq`` counts all deliveries incl. wides/no-balls).
     """
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    plt = _pyplot()
 
     df = traj_df.sort_values(["innings", "ball_seq"]).reset_index(drop=True)
     df["wp_team"] = np.where(df["batting_team"] == team, df["wp"], 1.0 - df["wp"])
@@ -158,7 +170,7 @@ def plot_wp_trajectory(traj_df: pd.DataFrame, out_path, title: str, team: str) -
     ax.set_title(title)
     ax.legend(loc="best")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=110)
+    fig.savefig(out_path, dpi=FIG_DPI)
     plt.close(fig)
 
 
@@ -168,9 +180,4 @@ def metrics_table(results: dict) -> pd.DataFrame:
     ``results`` maps model name -> dict from ``evaluate_probs`` (optionally
     augmented with ``ece``/``mce``). Row order follows insertion order.
     """
-    rows = []
-    for name, m in results.items():
-        row = {"model": name}
-        row.update(m)
-        rows.append(row)
-    return pd.DataFrame(rows)
+    return pd.DataFrame([{"model": name, **m} for name, m in results.items()])

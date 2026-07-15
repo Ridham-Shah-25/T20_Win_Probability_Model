@@ -8,7 +8,6 @@ Run with ``pytest`` from the repo root, or directly:
 ``python tests/test_evaluate.py``.
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -54,17 +53,24 @@ def test_reliability_stats_ordering():
 
 
 def test_tune_xgb_early_stopping():
-    from t20wp.models import load_split, tune_xgb
+    # Self-contained synthetic data so the test needs no generated parquet.
+    from t20wp.features import FEATURE_COLS
+    from t20wp.models import tune_xgb
 
-    features = pd.read_parquet(ROOT / "data/processed/features.parquet")
-    splits = json.loads((ROOT / "data/processed/splits.json").read_text())
-    X_tr, y_tr, _ = load_split(features, splits, "train")
-    X_val, y_val, _ = load_split(features, splits, "val")
-    # Small sample keeps the test fast; a real early stop still triggers.
+    rng = np.random.default_rng(7)
+    n_tr, n_val = 2000, 500
+    n_feat = len(FEATURE_COLS)
+    X_all = rng.standard_normal((n_tr + n_val, n_feat))
+    # A learnable signal so the model fits and then early-stops well short of
+    # n_estimators rather than running to the cap.
+    logits = X_all[:, 0] * 1.5 - X_all[:, 1]
+    y_all = (rng.random(n_tr + n_val) < 1 / (1 + np.exp(-logits))).astype(int)
+    X_tr = pd.DataFrame(X_all[:n_tr], columns=FEATURE_COLS)
+    X_val = pd.DataFrame(X_all[n_tr:], columns=FEATURE_COLS)
+    y_tr, y_val = y_all[:n_tr], y_all[n_tr:]
+
     grid = [{"max_depth": 4, "learning_rate": 0.1}]
-    best_model, best_params, trials = tune_xgb(
-        X_tr.iloc[:2000], y_tr[:2000], X_val.iloc[:500], y_val[:500], grid=grid
-    )
+    best_model, best_params, trials = tune_xgb(X_tr, y_tr, X_val, y_val, grid=grid)
     n_estimators = 2000
     assert int(best_model.best_iteration) < n_estimators - 1
     assert int(trials["best_iteration"].iloc[0]) < n_estimators - 1

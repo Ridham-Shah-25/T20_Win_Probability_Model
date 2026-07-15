@@ -29,6 +29,7 @@ from t20wp.evaluate import (  # noqa: E402
     plot_wp_trajectory,
     reliability_stats,
 )
+from t20wp.features import FEATURE_COLS  # noqa: E402
 from t20wp.models import (  # noqa: E402
     build_logreg,
     calibrate_xgb,
@@ -68,8 +69,6 @@ def build_trajectory(features, balls, match_id, model):
     b["ball_seq"] = g.cumcount() + 1
     events = b[["match_id", "innings", "ball_seq", "is_wicket", "runs_batter"]]
     traj = fm.merge(events, on=["match_id", "innings", "ball_seq"], how="left")
-    from t20wp.features import FEATURE_COLS
-
     traj["wp"] = predict_win_prob(model, traj[FEATURE_COLS])
     return traj.sort_values(["innings", "ball_seq"]).reset_index(drop=True)
 
@@ -113,9 +112,14 @@ def main() -> None:
     save_models({"lr": lr, "xgb": xgb, "xgb_calibrated": xgb_cal}, models_dir)
 
     # --- Test predictions --------------------------------------------
+    # Model display name -> (test-prediction column, prob array). Every
+    # per-model dict below (predictions frame, metrics, calibration) is
+    # derived from this single source so the model set is declared once.
     p_lr = predict_win_prob(lr, X_test)
     p_xgb = predict_win_prob(xgb, X_test)
     p_cal = predict_win_prob(xgb_cal, X_test)
+    prob_cols = {"LR": "p_lr", "XGB": "p_xgb", "XGB-cal": "p_cal"}
+    test_probs = {"LR": p_lr, "XGB": p_xgb, "XGB-cal": p_cal}
 
     preds = pd.DataFrame(
         {
@@ -123,41 +127,29 @@ def main() -> None:
             "ball_seq": meta_test["ball_seq"].values,
             "is_ipl": X_test["is_ipl"].values,
             "won": y_test,
-            "p_lr": p_lr,
-            "p_xgb": p_xgb,
-            "p_cal": p_cal,
+            **{col: test_probs[name] for name, col in prob_cols.items()},
         }
     )
     preds.to_parquet(models_dir / "test_predictions.parquet", index=False)
 
     # --- HARD: finite probs in [0, 1] --------------------------------
-    for col in ("p_lr", "p_xgb", "p_cal"):
+    for col in prob_cols.values():
         vals = preds[col].values
-        finite = bool(np.isfinite(vals).all())
-        in_range = bool((vals >= 0).all() and (vals <= 1).all())
-        check(f"{col} all finite", finite)
-        check(f"{col} all in [0, 1]", in_range)
+        check(f"{col} all finite", bool(np.isfinite(vals).all()))
+        check(f"{col} all in [0, 1]",
+              bool((vals >= 0).all() and (vals <= 1).all()))
 
     # --- Evaluate overall + IPL --------------------------------------
     ipl_mask = X_test["is_ipl"].values == 1
     n_test_matches = meta_test["match_id"].nunique()
     n_ipl_matches = meta_test.loc[ipl_mask, "match_id"].nunique()
 
-    overall_results = {
-        "LR": evaluate_probs(y_test, p_lr),
-        "XGB": evaluate_probs(y_test, p_xgb),
-        "XGB-cal": evaluate_probs(y_test, p_cal),
-    }
+    overall_results = {n: evaluate_probs(y_test, p) for n, p in test_probs.items()}
     ipl_results = {
-        "LR": evaluate_probs(y_test[ipl_mask], p_lr[ipl_mask]),
-        "XGB": evaluate_probs(y_test[ipl_mask], p_xgb[ipl_mask]),
-        "XGB-cal": evaluate_probs(y_test[ipl_mask], p_cal[ipl_mask]),
+        n: evaluate_probs(y_test[ipl_mask], p[ipl_mask])
+        for n, p in test_probs.items()
     }
-    rel = {
-        "LR": reliability_stats(y_test, p_lr),
-        "XGB": reliability_stats(y_test, p_xgb),
-        "XGB-cal": reliability_stats(y_test, p_cal),
-    }
+    rel = {n: reliability_stats(y_test, p) for n, p in test_probs.items()}
     for name in overall_results:
         overall_results[name].update(rel[name])
 
@@ -167,15 +159,10 @@ def main() -> None:
     print("\nIPL-only test metrics:\n", ipl_tbl.to_string(index=False))
 
     # --- Calibration plots -------------------------------------------
-    overall_curves = {
-        "LR": calibration_table(y_test, p_lr),
-        "XGB": calibration_table(y_test, p_xgb),
-        "XGB-cal": calibration_table(y_test, p_cal),
-    }
+    overall_curves = {n: calibration_table(y_test, p) for n, p in test_probs.items()}
     ipl_curves = {
-        "LR": calibration_table(y_test[ipl_mask], p_lr[ipl_mask]),
-        "XGB": calibration_table(y_test[ipl_mask], p_xgb[ipl_mask]),
-        "XGB-cal": calibration_table(y_test[ipl_mask], p_cal[ipl_mask]),
+        n: calibration_table(y_test[ipl_mask], p[ipl_mask])
+        for n, p in test_probs.items()
     }
     plot_calibration(overall_curves, fig_dir / "calibration_overall.png")
     plot_calibration(ipl_curves, fig_dir / "calibration_ipl.png")

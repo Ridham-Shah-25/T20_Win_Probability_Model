@@ -29,15 +29,22 @@ def load_split(features, splits, split_name, drop_ties=True):
     """Return ``(X, y, meta)`` for a frozen split.
 
     Filters ``features`` to the split's match ids; optionally drops tie rows
-    (``won == 0.5``). ``X`` = ``features[FEATURE_COLS]``, ``y`` =
-    ``won.astype(int)``, ``meta`` = ``features[ID_COLS]``.
+    (``won == 0.5``). ``X`` = ``features[FEATURE_COLS]``, ``meta`` =
+    ``features[ID_COLS]``.
+
+    ``y`` is cast to int only when ties are dropped (labels are then a clean
+    0/1); with ``drop_ties=False`` the labels are returned as float so a tie
+    (``0.5``) is not silently truncated to a loss. The binary models require
+    ``drop_ties=True``.
     """
     ids = set(splits[f"{split_name}_match_ids"])
     sub = features[features["match_id"].isin(ids)]
     if drop_ties:
         sub = sub[sub[LABEL_COL] != 0.5]
     X = sub[FEATURE_COLS].reset_index(drop=True)
-    y = sub[LABEL_COL].values.astype(int)
+    y = sub[LABEL_COL].values
+    if drop_ties:
+        y = y.astype(int)
     meta = sub[ID_COLS].reset_index(drop=True)
     return X, y, meta
 
@@ -65,23 +72,23 @@ _XGB_PARAM_DEFAULTS = {
 }
 
 _N_ESTIMATORS = 2000
+_EARLY_STOPPING_ROUNDS = 50
 
 
 def _fit_xgb(params: dict, X_tr, y_tr, X_val, y_val):
-    """Fit one early-stopped XGB and return ``(model, val_log_loss)``."""
-    full = {**_XGB_PARAM_DEFAULTS, **params}
+    """Fit one early-stopped XGB and return ``(model, val_log_loss)``.
+
+    ``params`` may set any subset of the tuned hyperparameters; the rest fall
+    back to ``_XGB_PARAM_DEFAULTS``.
+    """
+    tuned = {**_XGB_PARAM_DEFAULTS, **params}
     model = XGBClassifier(
         n_estimators=_N_ESTIMATORS,
-        max_depth=full["max_depth"],
-        learning_rate=full["learning_rate"],
-        min_child_weight=full["min_child_weight"],
-        subsample=full["subsample"],
-        colsample_bytree=full["colsample_bytree"],
-        reg_lambda=full["reg_lambda"],
-        early_stopping_rounds=50,
+        early_stopping_rounds=_EARLY_STOPPING_ROUNDS,
         eval_metric="logloss",
         tree_method="hist",
         n_jobs=-1,
+        **tuned,
     )
     model.fit(X_tr, y_tr, eval_set=[(X_val, y_val)], verbose=False)
     val_prob = model.predict_proba(X_val)[:, 1]
@@ -89,10 +96,11 @@ def _fit_xgb(params: dict, X_tr, y_tr, X_val, y_val):
 
 
 def _trial_row(params: dict, model, val_loss: float, stage: str) -> dict:
-    full = {**_XGB_PARAM_DEFAULTS, **params}
+    """One ``trials_df`` record: stage, full hyperparameters, fit result."""
+    tuned = {**_XGB_PARAM_DEFAULTS, **params}
     return {
         "stage": stage,
-        **full,
+        **tuned,
         "best_iteration": int(model.best_iteration),
         "val_log_loss": val_loss,
     }
@@ -122,7 +130,8 @@ def tune_xgb(X_tr, y_tr, X_val, y_val, grid=None):
     best_params = None
     best_loss = np.inf
 
-    def run(params: dict, stage: str) -> None:
+    def run(params: dict, stage: str) -> float:
+        """Fit ``params``, record the trial, update the global best; return val loss."""
         nonlocal best_model, best_params, best_loss
         model, val_loss = _fit_xgb(params, X_tr, y_tr, X_val, y_val)
         trials.append(_trial_row(params, model, val_loss, stage))
@@ -130,6 +139,7 @@ def tune_xgb(X_tr, y_tr, X_val, y_val, grid=None):
             best_loss = val_loss
             best_model = model
             best_params = {**_XGB_PARAM_DEFAULTS, **params}
+        return val_loss
 
     if grid is not None:
         for params in grid:
@@ -146,9 +156,9 @@ def tune_xgb(X_tr, y_tr, X_val, y_val, grid=None):
                         "learning_rate": learning_rate,
                         "min_child_weight": min_child_weight,
                     }
-                    run(params, "stage1_structure")
-                    if trials[-1]["val_log_loss"] < stage1_best_loss:
-                        stage1_best_loss = trials[-1]["val_log_loss"]
+                    val_loss = run(params, "stage1_structure")
+                    if val_loss < stage1_best_loss:
+                        stage1_best_loss = val_loss
                         stage1_best = params
 
         # Stage 2: regularization/sampling on top of the best stage-1 config.
