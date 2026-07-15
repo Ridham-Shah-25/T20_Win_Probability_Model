@@ -1,6 +1,9 @@
 # Data is reproducible from Cricsheet; never commit it
 data/
 
+# Trained models + prediction artifacts (reproducible via scripts/run_eval.py)
+models/
+
 # Python
 __pycache__/
 *.pyc
