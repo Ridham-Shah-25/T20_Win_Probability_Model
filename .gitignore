@@ -1,0 +1,17 @@
+# Data is reproducible from Cricsheet; never commit it
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.vscode/
+.claude/
