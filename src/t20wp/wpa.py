@@ -37,7 +37,8 @@ import pandas as pd
 from t20wp.features import FEATURE_COLS
 from t20wp.models import predict_win_prob
 
-# Default minimum sample size (balls faced/bowled per group) for leaderboards.
+# Default minimum balls for a player/season group to appear on a leaderboard;
+# filters out tiny, high-variance samples.
 DEFAULT_MIN_BALLS = 300
 
 # Context columns carried alongside the per-ball WP for aggregation/reporting.
@@ -45,10 +46,6 @@ CONTEXT_COLS = [
     "match_id", "innings", "ball_seq", "season", "competition", "is_ipl",
     "batter", "bowler", "batting_team", "bowling_team",
 ]
-
-# Default minimum balls for a player/season group to appear on a leaderboard;
-# filters out tiny, high-variance samples.
-DEFAULT_MIN_BALLS = 300
 
 
 def compute_ball_wp(features: pd.DataFrame, model) -> pd.DataFrame:
@@ -61,6 +58,37 @@ def compute_ball_wp(features: pd.DataFrame, model) -> pd.DataFrame:
     out = features[CONTEXT_COLS].copy()
     out["wp"] = wp
     return out
+
+
+def build_match_trajectory(features, balls, match_id, model) -> pd.DataFrame:
+    """One match's feature rows + ball events + predicted ``wp``, ordered.
+
+    Merges the match's feature rows with the wicket/boundary events from
+    ``balls`` (reconstructing the same ``ball_seq`` used in ``features``) and
+    scores each ball with ``model``. The result carries ``batting_team``,
+    ``innings``, ``ball_seq``, ``is_wicket``, ``runs_batter`` and ``wp`` — the
+    exact columns ``evaluate.plot_wp_trajectory`` needs. Shared by the eval
+    harness and the Streamlit app so both render identical trajectories.
+    """
+    fm = features[features["match_id"] == match_id].copy()
+    if fm.empty:
+        # No feature rows for this match (e.g. stale/mismatched artifacts):
+        # return an empty frame with the expected columns rather than letting
+        # predict_win_prob raise on a 0-row input, so callers can warn.
+        return fm.assign(is_wicket=pd.Series(dtype="boolean"),
+                         runs_batter=pd.Series(dtype="int64"),
+                         wp=pd.Series(dtype="float64"))
+    b = balls[
+        (balls["match_id"] == match_id)
+        & (~balls["is_super_over"])
+        & (balls["innings"] <= 2)
+    ].copy()
+    b = b.sort_values(["innings"], kind="stable")
+    b["ball_seq"] = b.groupby(["match_id", "innings"], sort=False).cumcount() + 1
+    events = b[["match_id", "innings", "ball_seq", "is_wicket", "runs_batter"]]
+    traj = fm.merge(events, on=["match_id", "innings", "ball_seq"], how="left")
+    traj["wp"] = predict_win_prob(model, traj[FEATURE_COLS])
+    return traj.sort_values(["innings", "ball_seq"]).reset_index(drop=True)
 
 
 def compute_delta_wp(df: pd.DataFrame) -> pd.DataFrame:
