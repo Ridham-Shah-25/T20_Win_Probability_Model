@@ -13,6 +13,8 @@ venv/
 
 # Notebooks
 .ipynb_checkpoints/
+# Scratch figures the showcase notebook renders on the fly
+notebooks/_*.png
 
 # OS / editor
 .DS_Store
