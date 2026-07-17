@@ -1,8 +1,14 @@
-"""Streamlit app: match selector + win-probability timeline.
+"""Streamlit app: win-probability explorer + what-if calculator.
 
-Pick any model match and see the ball-by-ball win-probability arc from the
-calibrated production model, on a fixed team perspective, with wicket and
-boundary markers — the same trajectory the evaluation harness plots.
+Two modes:
+
+* **Explore a match** — pick any model match and see the ball-by-ball
+  win-probability arc from the calibrated production model, on a fixed team
+  perspective, with wicket and boundary markers (the same trajectory the
+  evaluation harness plots).
+* **Win probability calculator** — enter a live match state (innings, score,
+  wickets, balls, target) and read the calibrated model's P(batting team win)
+  for that exact situation.
 
 Run from the repo root:
 
@@ -26,12 +32,16 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from t20wp.models import load_model  # noqa: E402
+from t20wp.features import (  # noqa: E402
+    BALLS_PER_INNINGS, default_runs_last_24, scenario_features,
+)
+from t20wp.models import load_model, predict_win_prob  # noqa: E402
 from t20wp.wpa import build_match_trajectory  # noqa: E402
 
 DATA = ROOT / "data" / "processed"
 MODEL_PATH = ROOT / "models" / "xgb_calibrated.joblib"
 DEFAULT_MATCH_ID = "951373"  # 2016 Men's T20 World Cup final
+DEFAULT_VENUE_PAR = 155.0  # league-typical 1st-innings total; overridable
 
 st.set_page_config(page_title="T20 Win Probability", layout="wide")
 
@@ -64,24 +74,8 @@ def match_label(row) -> str:
             f"@ {row['venue']} (#{row['match_id']})")
 
 
-def main() -> None:
-    st.title("T20 Win Probability")
-    st.caption(
-        "Ball-by-ball P(win) from the calibrated XGBoost model, with the "
-        "Win-Probability-Added (WPA) clutch metric behind it."
-    )
-
-    if not MODEL_PATH.exists() or not (DATA / "features.parquet").exists():
-        st.error(
-            "Pipeline artifacts missing. Run scripts/run_ingest.py, "
-            "run_features.py and run_eval.py first."
-        )
-        return
-
-    matches, features, balls = load_frames()
-    model = load_calibrated_model()
-
-    # --- sidebar filters ---
+def explore_match(matches, features, balls, model) -> None:
+    """Match-explorer mode: ball-by-ball WP arc for a chosen match."""
     st.sidebar.header("Pick a match")
     comps = {"All": None, "IPL": "ipl", "T20I": "t20i"}
     comp_choice = st.sidebar.selectbox("Competition", list(comps))
@@ -158,6 +152,166 @@ def main() -> None:
                    "wp_team", "is_wicket", "runs_batter"]].rename(
             columns={"wp_team": f"P({team} win)"})
         st.dataframe(show, width="stretch", height=360)
+
+
+def _default_venue_par(features) -> float:
+    """League-median 1st-innings par, used as the calculator's default."""
+    if features is not None and "venue_par" in features:
+        med = features["venue_par"].median()
+        if pd.notna(med):
+            return round(float(med), 1)
+    return DEFAULT_VENUE_PAR
+
+
+def win_probability_calculator(features, model) -> None:
+    """What-if mode: enter a live match state, read the model's P(win)."""
+    st.subheader("Win probability calculator")
+    st.caption(
+        "Enter a live match state and read the calibrated model's "
+        "P(batting team wins) for that exact situation."
+    )
+
+    par_default = _default_venue_par(features)
+
+    st.sidebar.header("Match state")
+    innings = st.sidebar.radio("Innings", [1, 2], index=1,
+                               help="1 = setting a total, 2 = chasing.")
+    comp = st.sidebar.selectbox("Competition", ["T20I", "IPL"])
+    is_ipl = comp == "IPL"
+
+    overs_completed = st.sidebar.slider("Completed overs", 0, 20, 10)
+    balls_this_over = st.sidebar.slider(
+        "Balls into current over", 0, 5, 0,
+        help="Legal balls bowled = completed overs × 6 + this.")
+    if overs_completed == 20:
+        balls_this_over = 0  # innings is over after 20 completed overs
+    legal_balls = min(overs_completed * 6 + balls_this_over, BALLS_PER_INNINGS)
+    overs_done = f"{legal_balls // 6}.{legal_balls % 6}"  # cricket over.ball
+    score = st.sidebar.number_input("Score (runs)", 0, 400, 90, step=1)
+    wickets_fallen = st.sidebar.slider("Wickets fallen", 0, 10, 3)
+
+    target = None
+    if innings == 2:
+        target = st.sidebar.number_input(
+            "Target (runs to win)", 1, 400, 160, step=1,
+            help="1st-innings total + 1.",
+        )
+
+    with st.sidebar.expander("Advanced context (defaults are league-typical)"):
+        st.caption(
+            "These are historical/contextual inputs the ball-by-ball pipeline "
+            "computes from prior matches; they cannot be derived from the live "
+            "state, so the defaults are sensible league values you can adjust."
+        )
+        venue_par = st.number_input(
+            "Venue par (expected 1st-innings total)", 80.0, 260.0,
+            float(par_default), step=1.0,
+        )
+        batting_strength = st.slider(
+            "Batting team strength (prior win rate)", 0.0, 1.0, 0.5, step=0.01)
+        bowling_strength = st.slider(
+            "Bowling team strength (prior win rate)", 0.0, 1.0, 0.5, step=0.01)
+        # Momentum over the last ~4 overs. Defaults track the current run rate
+        # (runs) and assume no recent wickets; override to model a collapse or
+        # a flurry.
+        default_runs_24 = round(default_runs_last_24(score, legal_balls), 1)
+        runs_last_24 = st.number_input(
+            "Runs in last 24 balls", 0.0, 200.0, float(default_runs_24),
+            step=1.0)
+        wickets_last_24 = st.slider(
+            "Wickets in last 24 balls", 0, 10, 0,
+            help="Recent collapses hurt WP; a flurry of boundaries helps it.")
+        # is_ipl and is_associate_match are mutually exclusive tiers; only
+        # offer the associate toggle for T20Is.
+        is_associate = (
+            st.checkbox("Associate-nation T20I", value=False)
+            if not is_ipl else False
+        )
+
+    # A chase can be terminally decided by the game state, in which case the
+    # model should not be consulted at all (those states are win/loss facts,
+    # and out-of-balls/out-of-wickets losing states never appear in training).
+    if innings == 2 and target is not None:
+        chase_over = legal_balls >= BALLS_PER_INNINGS or wickets_fallen >= 10
+        if score >= target:
+            st.success(
+                f"Chase complete — {score} reaches the {target} target. "
+                "P(batting team win) = 100%."
+            )
+            return
+        if chase_over:  # innings ended short of the target
+            if score == target - 1:
+                st.info(
+                    f"Scores level ({score} vs target {target}) with the "
+                    "innings over — match tied."
+                )
+            else:
+                st.error(
+                    f"Chase failed — {score}, {target - score} short with no "
+                    "balls or wickets left. P(batting team win) = 0%."
+                )
+            return
+
+    feats = scenario_features(
+        innings=innings, score=int(score), wickets_fallen=int(wickets_fallen),
+        legal_balls=legal_balls, target=int(target) if target else None,
+        venue_par=float(venue_par), batting_strength=float(batting_strength),
+        bowling_strength=float(bowling_strength),
+        runs_last_24=float(runs_last_24), wickets_last_24=float(wickets_last_24),
+        is_ipl=is_ipl, is_associate_match=is_associate,
+    )
+    wp = float(predict_win_prob(model, feats)[0])
+
+    c1, c2 = st.columns(2)
+    c1.metric("P(batting team wins)", f"{wp:.1%}")
+    c2.metric("P(bowling team wins)", f"{1 - wp:.1%}")
+
+    balls_left = int(feats["balls_remaining"].iloc[0])
+    if innings == 2:
+        st.write(
+            f"**Chasing:** {score}/{wickets_fallen} after "
+            f"{overs_done} overs, needing {int(target) - score} from "
+            f"{balls_left} balls (RRR "
+            f"{feats['required_run_rate'].iloc[0]:.2f}, CRR "
+            f"{feats['current_run_rate'].iloc[0]:.2f})."
+        )
+    else:
+        st.write(
+            f"**Batting first:** {score}/{wickets_fallen} after "
+            f"{overs_done} overs (CRR "
+            f"{feats['current_run_rate'].iloc[0]:.2f}, projected "
+            f"{feats['projected_score'].iloc[0]:.0f})."
+        )
+
+    with st.expander("Model input features"):
+        st.dataframe(feats.T.rename(columns={0: "value"}), width="stretch")
+
+
+def main() -> None:
+    st.title("T20 Win Probability")
+    st.caption(
+        "Ball-by-ball P(win) from the calibrated XGBoost model, with the "
+        "Win-Probability-Added (WPA) clutch metric behind it."
+    )
+
+    if not MODEL_PATH.exists() or not (DATA / "features.parquet").exists():
+        st.error(
+            "Pipeline artifacts missing. Run scripts/run_ingest.py, "
+            "run_features.py and run_eval.py first."
+        )
+        return
+
+    matches, features, balls = load_frames()
+    model = load_calibrated_model()
+
+    mode = st.sidebar.radio(
+        "Mode", ["Explore a match", "Win probability calculator"]
+    )
+    st.sidebar.divider()
+    if mode == "Explore a match":
+        explore_match(matches, features, balls, model)
+    else:
+        win_probability_calculator(features, model)
 
 
 if __name__ == "__main__":
