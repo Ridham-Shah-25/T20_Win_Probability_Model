@@ -14,14 +14,21 @@ Run from the repo root:
 
     streamlit run app/streamlit_app.py
 
-Requires the pipeline artifacts to exist (``data/processed/*.parquet`` and
-``models/xgb_calibrated.joblib``); build them with ``scripts/run_ingest.py`` →
-``run_features.py`` → ``run_eval.py`` if missing.
+Requires the pipeline artifacts (``data/processed/*.parquet`` and
+``models/xgb_calibrated.joblib``). These are gitignored and reproducible, so on
+a fresh checkout / deploy they are downloaded on first launch from the GitHub
+release named by ``T20WP_ARTIFACT_RELEASE`` (see ``ensure_artifacts``). To build
+them locally instead, run ``scripts/run_ingest.py`` → ``run_features.py`` →
+``run_eval.py``.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
+import ssl
 import sys
+import urllib.request
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -44,6 +51,67 @@ DEFAULT_MATCH_ID = "951373"  # 2016 Men's T20 World Cup final
 DEFAULT_VENUE_PAR = 155.0  # league-typical 1st-innings total; overridable
 
 st.set_page_config(page_title="T20 Win Probability", layout="wide")
+
+# On a fresh deploy the parquet/model files are absent (gitignored, reproducible).
+# Missing files are fetched from this GitHub release; override via env var to
+# point at your own fork's release.
+ARTIFACT_RELEASE = os.environ.get(
+    "T20WP_ARTIFACT_RELEASE",
+    "https://github.com/Ridham-Shah-25/T20_Win_Probability_Model"
+    "/releases/download/artifacts-v1",
+)
+
+# Runtime artifact filename -> local destination path.
+ARTIFACTS = {
+    "matches.parquet": DATA / "matches.parquet",
+    "features.parquet": DATA / "features.parquet",
+    "balls.parquet": DATA / "balls.parquet",
+    "xgb_calibrated.joblib": MODEL_PATH,
+}
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """SSL context backed by certifi's CA bundle when available.
+
+    Some Python builds (e.g. the python.org macOS framework) ship without a
+    configured system trust store, so an explicit bundle avoids
+    CERTIFICATE_VERIFY_FAILED. certifi ships as a Streamlit dependency.
+    """
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001
+        return ssl.create_default_context()
+
+
+@st.cache_resource(show_spinner=False)
+def ensure_artifacts() -> bool:
+    """Download any missing runtime artifacts from the GitHub release.
+
+    Returns True once every file is present locally. On download failure the
+    resource cache is cleared so a later rerun retries rather than caching the
+    failure, and False is returned so the caller can show guidance.
+    """
+    ctx = _ssl_context()
+    for name, dest in ARTIFACTS.items():
+        if dest.exists():
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        url = f"{ARTIFACT_RELEASE}/{name}"
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with st.spinner(f"Downloading {name} (first launch only)…"):
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, context=ctx) as resp, \
+                        open(tmp, "wb") as fh:
+                    shutil.copyfileobj(resp, fh)
+            tmp.replace(dest)
+        except Exception as exc:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+            st.error(f"Could not download {name} from {url}\n\n{exc}")
+            ensure_artifacts.clear()
+            return False
+    return True
 
 
 @st.cache_data(show_spinner=False)
@@ -294,10 +362,11 @@ def main() -> None:
         "Win-Probability-Added (WPA) clutch metric behind it."
     )
 
-    if not MODEL_PATH.exists() or not (DATA / "features.parquet").exists():
-        st.error(
-            "Pipeline artifacts missing. Run scripts/run_ingest.py, "
-            "run_features.py and run_eval.py first."
+    if not ensure_artifacts():
+        st.info(
+            "Point `T20WP_ARTIFACT_RELEASE` at a GitHub release hosting the "
+            "parquet/model files, or build them locally with "
+            "scripts/run_ingest.py → run_features.py → run_eval.py."
         )
         return
 

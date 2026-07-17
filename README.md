@@ -180,7 +180,8 @@ python scripts/run_wpa.py
 ```
 
 Then open the walkthrough notebook (loads the calibrated model + artifacts,
-reusing `t20wp` functions — no re-implemented logic):
+reusing `t20wp` functions — no re-implemented logic; needs the dev deps:
+`pip install -r requirements-dev.txt`):
 
 ```bash
 jupyter nbconvert --to notebook --execute --inplace \
@@ -212,10 +213,12 @@ tests/            pytest unit tests for evaluate + wpa
 
 ## Requirements & tests
 
-Python 3.12; see [`requirements.txt`](requirements.txt) (pandas, numpy,
-scikit-learn ≥ 1.9, xgboost ≥ 3.3, matplotlib, joblib; dev: pytest, jupyter,
-nbconvert, ipykernel). Run the unit tests with:
+Python 3.12; runtime deps in [`requirements.txt`](requirements.txt) (pandas,
+numpy, scikit-learn ≥ 1.9, xgboost ≥ 3.3, matplotlib, joblib, streamlit).
+Test/notebook deps (pytest, jupyter, nbconvert, ipykernel) are in
+[`requirements-dev.txt`](requirements-dev.txt). Run the unit tests with:
 
 ```bash
+pip install -r requirements-dev.txt
 pytest
 ```

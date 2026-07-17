@@ -1,0 +1,9 @@
+# Development, testing and notebook execution.
+# Installs the runtime deps too, so: pip install -r requirements-dev.txt
+-r requirements.txt
+
+pytest>=8.0
+# notebook execution (showcase.ipynb): `jupyter nbconvert --execute`
+jupyter>=1.0
+nbconvert>=7.0
+ipykernel>=6.0
