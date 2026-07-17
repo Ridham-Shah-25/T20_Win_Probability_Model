@@ -193,6 +193,114 @@ def build_features(balls: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
     return b[ID_COLS + FEATURE_COLS + [LABEL_COL]]
 
 
+def default_runs_last_24(score: int, legal_balls: int) -> float:
+    """Momentum default: current pace over a 24-ball window, capped at ``score``.
+
+    Mirrors the pipeline's ``runs_last_24`` rolling sum (``min_periods=1``),
+    which before 24 balls equals the cumulative innings runs. Shared by
+    :func:`scenario_features` and the what-if app so the default can't drift.
+    """
+    return min(float(score), score * MOMENTUM_WINDOW / max(legal_balls, 1))
+
+
+def scenario_features(
+    *,
+    innings: int,
+    score: int,
+    wickets_fallen: int,
+    legal_balls: int,
+    target: int | None = None,
+    venue_par: float,
+    batting_strength: float = 0.5,
+    bowling_strength: float = 0.5,
+    runs_last_24: float | None = None,
+    wickets_last_24: float = 0.0,
+    is_ipl: bool = False,
+    is_associate_match: bool = False,
+) -> pd.DataFrame:
+    """Build a single ``FEATURE_COLS`` row from raw match state.
+
+    Reconstructs exactly the feature derivations of :func:`build_features` for
+    one delivery-state, so the "what-if" calculator scores identically to the
+    ball-by-ball pipeline. Returns a one-row DataFrame with the columns in
+    ``FEATURE_COLS`` order (and the same per-innings NaN pattern the model was
+    trained on: chase features are NaN in the 1st innings, ``projected_*`` are
+    NaN in the 2nd).
+
+    Raw state (derivable from the game): ``innings`` (1 or 2), ``score``,
+    ``wickets_fallen`` (0-10), ``legal_balls`` bowled so far in this innings
+    (0-120), and ``target`` (1st-innings total + 1; required for a chase).
+
+    Contextual inputs that the pipeline computes from history and cannot be
+    recovered from raw state -- caller must supply them (the app exposes them
+    as advanced inputs with data-driven defaults): ``venue_par`` (expected
+    1st-innings total at the venue), ``batting_strength``/``bowling_strength``
+    (rolling prior win rates, 0-1), and the momentum window
+    ``runs_last_24``/``wickets_last_24`` (defaults to the current run rate over
+    24 balls / 0 when not supplied).
+    """
+    if innings not in (1, 2):
+        raise ValueError(f"innings must be 1 or 2, got {innings}")
+    if not 0 <= wickets_fallen <= 10:
+        raise ValueError(f"wickets_fallen must be 0-10, got {wickets_fallen}")
+    if not 0 <= legal_balls <= BALLS_PER_INNINGS:
+        raise ValueError(
+            f"legal_balls must be 0-{BALLS_PER_INNINGS}, got {legal_balls}"
+        )
+
+    is2 = innings == 2
+    balls_remaining = max(BALLS_PER_INNINGS - legal_balls, 0)
+    wickets_in_hand = 10 - wickets_fallen
+    current_run_rate = 6 * score / max(legal_balls, 1)
+
+    if runs_last_24 is None:
+        runs_last_24 = default_runs_last_24(score, legal_balls)
+
+    if is2:
+        if target is None:
+            raise ValueError("target is required for a 2nd-innings chase")
+        runs_required = float(target - score)
+        if balls_remaining == 0:
+            rrr = RRR_CAP if runs_required > 0 else 0.0
+        else:
+            rrr = 6 * runs_required / balls_remaining
+        required_run_rate = float(min(max(rrr, 0.0), RRR_CAP))
+        rrr_minus_crr = required_run_rate - current_run_rate
+        projected_score = np.nan
+        projected_vs_par = np.nan
+        target_vs_par = float(target - venue_par)
+    else:
+        runs_required = np.nan
+        required_run_rate = np.nan
+        rrr_minus_crr = np.nan
+        projected_score = score * BALLS_PER_INNINGS / max(legal_balls, 1)
+        projected_vs_par = projected_score - venue_par
+        target_vs_par = np.nan
+
+    row = {
+        "is_second_innings": int(is2),
+        "balls_remaining": balls_remaining,
+        "wickets_in_hand": wickets_in_hand,
+        "score": score,
+        "current_run_rate": current_run_rate,
+        "runs_required": runs_required,
+        "required_run_rate": required_run_rate,
+        "rrr_minus_crr": rrr_minus_crr,
+        "projected_score": projected_score,
+        "projected_vs_par": projected_vs_par,
+        "target_vs_par": target_vs_par,
+        "venue_par": float(venue_par),
+        "runs_last_24": float(runs_last_24),
+        "wickets_last_24": float(wickets_last_24),
+        "batting_strength": float(batting_strength),
+        "bowling_strength": float(bowling_strength),
+        "strength_diff": float(batting_strength - bowling_strength),
+        "is_ipl": int(is_ipl),
+        "is_associate_match": int(is_associate_match),
+    }
+    return pd.DataFrame([row])[FEATURE_COLS]
+
+
 def make_splits(
     matches: pd.DataFrame, train_frac: float = 0.75, val_frac: float = 0.10
 ) -> dict:
