@@ -272,8 +272,8 @@ def win_probability_calculator(features, model) -> None:
             "state, so the defaults are sensible league values you can adjust."
         )
         venue_par = st.number_input(
-            "Venue par (expected 1st-innings total)", 80.0, 260.0,
-            float(par_default), step=1.0,
+            "Venue par (expected 1st-innings total)", 80, 260,
+            int(round(par_default)), step=1,
         )
         batting_strength = st.slider(
             "Batting team strength (prior win rate)", 0.0, 1.0, 0.5, step=0.01)
@@ -282,10 +282,9 @@ def win_probability_calculator(features, model) -> None:
         # Momentum over the last ~4 overs. Defaults track the current run rate
         # (runs) and assume no recent wickets; override to model a collapse or
         # a flurry.
-        default_runs_24 = round(default_runs_last_24(score, legal_balls), 1)
+        default_runs_24 = int(round(default_runs_last_24(score, legal_balls)))
         runs_last_24 = st.number_input(
-            "Runs in last 24 balls", 0.0, 200.0, float(default_runs_24),
-            step=1.0)
+            "Runs in last 24 balls", 0, 200, default_runs_24, step=1)
         wickets_last_24 = st.slider(
             "Wickets in last 24 balls", 0, 10, 0,
             help="Recent collapses hurt WP; a flurry of boundaries helps it.")
