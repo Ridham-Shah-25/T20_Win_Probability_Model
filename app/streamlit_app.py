@@ -191,38 +191,55 @@ def explore_match(matches, features, balls, model) -> None:
     df["wp_team"] = np.where(df["batting_team"] == team, df["wp"], 1.0 - df["wp"])
     x = np.arange(len(df))
 
-    # --- headline result ---
-    # "Final P(win)" is dropped: the isotonic calibrator saturates on a
-    # decided match, so it read ~identically whether the chase was one run
-    # short or already won, and "Actual winner" already states the outcome.
-    # These two WPA-style stats tell the match story the chart alone doesn't.
-    winner = (str(row["winner"]) if pd.notna(row["winner"])
-              and str(row["winner"]).strip() else "no result / tie")
-
     def _over_label(r) -> str:
         """Overs-bowled notation (e.g. "12.3") from legal balls, so an over
         with a wide/no-ball still reads at most X.6."""
         legal = BALLS_PER_INNINGS - int(r["balls_remaining"])
         return f"{legal // 6}.{legal % 6}"
 
-    low_i = df["wp_team"].idxmin()
+    # --- headline result ---
+    # "Final P(win)" is dropped: the isotonic calibrator saturates on a
+    # decided match, so it read ~identically whether the chase was one run
+    # short or already won, and the winner below already states the outcome.
+    winner = (str(row["winner"]) if pd.notna(row["winner"])
+              and str(row["winner"]).strip() else "")
+    if winner:
+        if int(row.get("win_by_wickets", 0) or 0) > 0:
+            margin = f" (by {int(row['win_by_wickets'])} wickets)"
+        elif int(row.get("win_by_runs", 0) or 0) > 0:
+            margin = f" (by {int(row['win_by_runs'])} runs)"
+        else:
+            margin = ""
+        st.markdown(f"**Actual winner:** {winner}{margin}")
+    else:
+        st.markdown("**Actual winner:** no result / tie")
+
+    # Lowest WP the *eventual winner* fell to — "how close the winner came to
+    # losing". Tying this to the selected team makes it trivial for the loser
+    # (their P heads to 0 by the last ball), so use the winner's perspective.
+    low_team = winner or team
+    low_persp = np.where(df["batting_team"] == low_team, df["wp"], 1 - df["wp"])
+    low_persp = pd.Series(low_persp, index=df.index)
+    low_i = low_persp.idxmin()
     low_row = df.loc[low_i]
-    low_over = _over_label(low_row)
-    # Largest single-ball move in this team's WP, and where it happened.
-    swings = df["wp_team"].diff().abs()
+
+    # Biggest single-ball swing *within an innings*: a plain diff() across the
+    # whole match flags the innings break, where the jump is the change of
+    # context (chase begins), not one delivery.
+    swings = df.groupby("innings")["wp"].diff().abs()
     swing_i = swings.idxmax()
     swing_row = df.loc[swing_i]
-    swing_over = _over_label(swing_row)
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Actual winner", winner)
-    c2.metric(f"Lowest P({team} win)", f"{df.loc[low_i, 'wp_team']:.0%}",
-              help=f"At over {low_over}, {low_row['batting_team']} "
+    c1, c2 = st.columns(2)
+    c1.metric(f"Lowest P({low_team} win)", f"{low_persp.loc[low_i]:.0%}",
+              help=f"The lowest the eventual winner fell to — at over "
+                   f"{_over_label(low_row)}, {low_row['batting_team']} "
                    f"{int(low_row['score'])}/"
                    f"{10 - int(low_row['wickets_in_hand'])}.")
-    c3.metric("Biggest swing", f"{swings.loc[swing_i]:.0%}",
-              help=f"On one ball at over {swing_over}: "
-                   f"{swing_row['batter']} vs {swing_row['bowler']}.")
+    c2.metric("Biggest swing (one ball)", f"{swings.loc[swing_i]:.0%}",
+              help=f"Largest win-probability change on a single delivery — "
+                   f"over {_over_label(swing_row)}, {swing_row['batter']} vs "
+                   f"{swing_row['bowler']}.")
 
     # The chart marks the selected delivery, but the picker reads better
     # below the chart — reserve the slot and fill it once the pick is known.
