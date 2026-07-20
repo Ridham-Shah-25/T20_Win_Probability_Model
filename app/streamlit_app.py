@@ -192,12 +192,37 @@ def explore_match(matches, features, balls, model) -> None:
     x = np.arange(len(df))
 
     # --- headline result ---
+    # "Final P(win)" is dropped: the isotonic calibrator saturates on a
+    # decided match, so it read ~identically whether the chase was one run
+    # short or already won, and "Actual winner" already states the outcome.
+    # These two WPA-style stats tell the match story the chart alone doesn't.
     winner = (str(row["winner"]) if pd.notna(row["winner"])
               and str(row["winner"]).strip() else "no result / tie")
-    final_wp = float(df["wp_team"].iloc[-1])
-    c1, c2 = st.columns(2)
-    c1.metric(f"Final P({team} win)", f"{final_wp:.0%}")
-    c2.metric("Actual winner", winner)
+
+    def _over_label(r) -> str:
+        """Overs-bowled notation (e.g. "12.3") from legal balls, so an over
+        with a wide/no-ball still reads at most X.6."""
+        legal = BALLS_PER_INNINGS - int(r["balls_remaining"])
+        return f"{legal // 6}.{legal % 6}"
+
+    low_i = df["wp_team"].idxmin()
+    low_row = df.loc[low_i]
+    low_over = _over_label(low_row)
+    # Largest single-ball move in this team's WP, and where it happened.
+    swings = df["wp_team"].diff().abs()
+    swing_i = swings.idxmax()
+    swing_row = df.loc[swing_i]
+    swing_over = _over_label(swing_row)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Actual winner", winner)
+    c2.metric(f"Lowest P({team} win)", f"{df.loc[low_i, 'wp_team']:.0%}",
+              help=f"At over {low_over}, {low_row['batting_team']} "
+                   f"{int(low_row['score'])}/"
+                   f"{10 - int(low_row['wickets_in_hand'])}.")
+    c3.metric("Biggest swing", f"{swings.loc[swing_i]:.0%}",
+              help=f"On one ball at over {swing_over}: "
+                   f"{swing_row['batter']} vs {swing_row['bowler']}.")
 
     # The chart marks the selected delivery, but the picker reads better
     # below the chart — reserve the slot and fill it once the pick is known.
@@ -277,15 +302,11 @@ def explore_match(matches, features, balls, model) -> None:
     # so this reads as the situation once the ball has been bowled.
     bat_team = sel_row["batting_team"]
     wickets_fallen = 10 - int(sel_row["wickets_in_hand"])
-    # Overs come from legal balls bowled, not the picker's ball number: an
-    # over containing a wide reaches ball 7 but still only 6 legal balls.
-    legal_bowled = BALLS_PER_INNINGS - int(sel_row["balls_remaining"])
-    overs_txt = f"{legal_bowled // 6}.{legal_bowled % 6}"
 
     st.markdown(f"#### Current situation — {bat_team} batting")
     s1, s2, s3 = st.columns(3)
     s1.metric("Score", f"{int(sel_row['score'])}/{wickets_fallen}")
-    s2.metric("Overs bowled", overs_txt)
+    s2.metric("Overs bowled", _over_label(sel_row))
     s3.metric(f"P({team} win) here", f"{sel_row['wp_team']:.0%}")
 
     if int(sel_row["is_second_innings"]) == 1:
