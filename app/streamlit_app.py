@@ -151,10 +151,15 @@ def explore_match(matches, features, balls, model) -> None:
     if comps[comp_choice] is not None:
         pool = pool[pool["competition"] == comps[comp_choice]]
 
-    seasons = ["All"] + sorted(pool["season"].dropna().unique(), reverse=True)
-    season_choice = st.sidebar.selectbox("Season", seasons)
-    if season_choice != "All":
-        pool = pool[pool["season"] == season_choice]
+    # Calendar year (from match date) rather than the raw "season" label,
+    # which for cross-new-year tours reads as e.g. "2025/26" — confusing
+    # compared to a plain year.
+    years = ["All"] + sorted(
+        {int(y) for y in pool["date"].dt.year.dropna().unique()}, reverse=True
+    )
+    year_choice = st.sidebar.selectbox("Year", years)
+    if year_choice != "All":
+        pool = pool[pool["date"].dt.year == year_choice]
 
     pool = pool.sort_values("date", ascending=False).reset_index(drop=True)
     if pool.empty:
@@ -186,6 +191,32 @@ def explore_match(matches, features, balls, model) -> None:
     df["wp_team"] = np.where(df["batting_team"] == team, df["wp"], 1.0 - df["wp"])
     x = np.arange(len(df))
 
+    # --- inspect a point: over/ball -> match situation + WP at that ball ---
+    st.sidebar.divider()
+    st.sidebar.header("Inspect a point")
+    innings_present = sorted(df["innings"].unique())
+    inn_labels = {}
+    for i in innings_present:
+        bt = df.loc[df["innings"] == i, "batting_team"].iloc[0]
+        inn_labels[f"{'1st' if i == 1 else '2nd'} innings — {bt} batting"] = i
+    inn_label = st.sidebar.selectbox("Innings", list(inn_labels))
+    df_inn = df[df["innings"] == inn_labels[inn_label]]
+
+    overs_present = sorted(df_inn["over"].unique())
+    over_choice = st.sidebar.selectbox(
+        "Over", overs_present, format_func=lambda o: f"Over {o + 1}")
+    balls_present = sorted(
+        df_inn.loc[df_inn["over"] == over_choice, "ball_in_over"].unique())
+    ball_choice = st.sidebar.selectbox(
+        "Ball", balls_present, format_func=lambda b: f"Ball {b}")
+
+    sel_row = df_inn[
+        (df_inn["over"] == over_choice) & (df_inn["ball_in_over"] == ball_choice)
+    ].iloc[0]
+    sel_idx = sel_row.name  # df's index is the global 0..n-1 delivery position
+                             # used as the plot's x-axis, so this also locates
+                             # the point on the graph below.
+
     fig, ax = plt.subplots(figsize=(11, 5))
     ax.plot(x, df["wp_team"], color="#1f77b4", lw=1.6, label=f"P({team} win)")
     ax.axhline(0.5, color="grey", lw=0.8, ls=":")
@@ -198,6 +229,10 @@ def explore_match(matches, features, balls, model) -> None:
     bd = df[df["runs_batter"].isin([4, 6])]
     ax.scatter(bd.index, df.loc[bd.index, "wp_team"], color="green",
                marker="^", s=35, zorder=4, label="4/6")
+    ax.axvline(sel_idx, color="#ff7f0e", lw=0.8, ls=":", alpha=0.6)
+    ax.scatter([sel_idx], [df.loc[sel_idx, "wp_team"]], color="#ff7f0e",
+               marker="o", s=110, zorder=6, edgecolor="black", linewidth=0.8,
+               label="selected ball")
     ax.set_xlabel("Delivery (global index across both innings)")
     ax.set_ylabel(f"P({team} wins)")
     ax.set_ylim(0, 1)
@@ -208,18 +243,20 @@ def explore_match(matches, features, balls, model) -> None:
     winner = (str(row["winner"]) if pd.notna(row["winner"])
               and str(row["winner"]).strip() else "no result / tie")
     final_wp = float(df["wp_team"].iloc[-1])
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric(f"Final P({team} win)", f"{final_wp:.0%}")
     c2.metric("Actual winner", winner)
-    c3.metric("Deliveries", len(df))
 
     st.pyplot(fig)
 
-    with st.expander("Ball-by-ball table"):
-        show = df[["innings", "ball_seq", "batting_team", "batter", "bowler",
-                   "wp_team", "is_wicket", "runs_batter"]].rename(
-            columns={"wp_team": f"P({team} win)"})
-        st.dataframe(show, width="stretch", height=360)
+    st.subheader(f"Situation — {inn_label}, over {over_choice + 1}, ball {ball_choice}")
+    wickets_fallen = 10 - int(sel_row["wickets_in_hand"])
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("Score", f"{int(sel_row['score'])}/{wickets_fallen}")
+    sc2.metric("Batter", sel_row["batter"])
+    sc3.metric("Bowler", sel_row["bowler"])
+    sc4.metric(f"P({team} win)", f"{sel_row['wp_team']:.0%}")
+    st.caption(f"Non-striker: {sel_row['non_striker']}")
 
 
 def _default_venue_par(features) -> float:
