@@ -191,31 +191,60 @@ def explore_match(matches, features, balls, model) -> None:
     df["wp_team"] = np.where(df["batting_team"] == team, df["wp"], 1.0 - df["wp"])
     x = np.arange(len(df))
 
-    # --- inspect a point: over/ball -> match situation + WP at that ball ---
-    st.sidebar.divider()
-    st.sidebar.header("Inspect a point")
-    innings_present = sorted(df["innings"].unique())
-    inn_labels = {}
-    for i in innings_present:
-        bt = df.loc[df["innings"] == i, "batting_team"].iloc[0]
-        inn_labels[f"{'1st' if i == 1 else '2nd'} innings — {bt} batting"] = i
-    inn_label = st.sidebar.selectbox("Innings", list(inn_labels))
-    df_inn = df[df["innings"] == inn_labels[inn_label]]
+    # --- headline result ---
+    winner = (str(row["winner"]) if pd.notna(row["winner"])
+              and str(row["winner"]).strip() else "no result / tie")
+    final_wp = float(df["wp_team"].iloc[-1])
+    c1, c2 = st.columns(2)
+    c1.metric(f"Final P({team} win)", f"{final_wp:.0%}")
+    c2.metric("Actual winner", winner)
 
-    overs_present = sorted(df_inn["over"].unique())
-    over_choice = st.sidebar.selectbox(
-        "Over", overs_present, format_func=lambda o: f"Over {o + 1}")
+    # The chart marks the selected delivery, but the picker reads better
+    # below the chart — reserve the slot and fill it once the pick is known.
+    chart_slot = st.empty()
+
+    # --- pick a delivery ---
+    # Sliders rather than dropdowns: every value stays on screen instead of
+    # hiding behind a popup, which got clipped in the narrow sidebar.
+    st.divider()
+    st.subheader("Jump to any point in the match")
+    st.caption(
+        "Choose an innings, over and ball to see the match situation and the "
+        "model's win probability at that moment. The orange dot marks it on "
+        "the chart above."
+    )
+
+    innings_present = sorted(int(i) for i in df["innings"].unique())
+    inn_names = {
+        i: (f"{'1st' if i == 1 else '2nd'} innings · "
+            f"{df.loc[df['innings'] == i, 'batting_team'].iloc[0]} batting")
+        for i in innings_present
+    }
+    inn_choice = st.radio("Innings", innings_present,
+                          format_func=lambda i: inn_names[i], horizontal=True)
+    df_inn = df[df["innings"] == inn_choice]
+
+    pick_over, pick_ball = st.columns(2)
+    overs_present = sorted(int(o) for o in df_inn["over"].unique())
+    with pick_over:
+        # `over` is 0-indexed in the data; show it as the 1-based over number.
+        over_choice = st.select_slider(
+            "Over", options=overs_present, format_func=lambda o: str(o + 1))
     balls_present = sorted(
-        df_inn.loc[df_inn["over"] == over_choice, "ball_in_over"].unique())
-    ball_choice = st.sidebar.selectbox(
-        "Ball", balls_present, format_func=lambda b: f"Ball {b}")
+        int(b) for b in
+        df_inn.loc[df_inn["over"] == over_choice, "ball_in_over"].unique()
+    )
+    with pick_ball:
+        # An over runs past 6 balls when it contains a wide or a no-ball.
+        ball_choice = st.select_slider(
+            "Ball in the over", options=balls_present, format_func=str)
 
     sel_row = df_inn[
         (df_inn["over"] == over_choice) & (df_inn["ball_in_over"] == ball_choice)
     ].iloc[0]
-    sel_idx = sel_row.name  # df's index is the global 0..n-1 delivery position
-                             # used as the plot's x-axis, so this also locates
-                             # the point on the graph below.
+    # df's index is the global 0..n-1 delivery position, which is also the
+    # chart's x-axis, so this locates the selection on the plot.
+    sel_idx = sel_row.name
 
     fig, ax = plt.subplots(figsize=(11, 5))
     ax.plot(x, df["wp_team"], color="#1f77b4", lw=1.6, label=f"P({team} win)")
@@ -239,24 +268,41 @@ def explore_match(matches, features, balls, model) -> None:
     ax.set_title(match_label(row))
     ax.legend(loc="best")
     fig.tight_layout()
+    chart_slot.pyplot(fig)
 
-    winner = (str(row["winner"]) if pd.notna(row["winner"])
-              and str(row["winner"]).strip() else "no result / tie")
-    final_wp = float(df["wp_team"].iloc[-1])
-    c1, c2 = st.columns(2)
-    c1.metric(f"Final P({team} win)", f"{final_wp:.0%}")
-    c2.metric("Actual winner", winner)
-
-    st.pyplot(fig)
-
-    st.subheader(f"Situation — {inn_label}, over {over_choice + 1}, ball {ball_choice}")
+    # --- situation at the selected delivery ---
+    # score/wickets in the feature rows are the state *after* the delivery,
+    # so this reads as the situation once the ball has been bowled.
+    bat_team = sel_row["batting_team"]
     wickets_fallen = 10 - int(sel_row["wickets_in_hand"])
-    sc1, sc2, sc3, sc4 = st.columns(4)
-    sc1.metric("Score", f"{int(sel_row['score'])}/{wickets_fallen}")
-    sc2.metric("Batter", sel_row["batter"])
-    sc3.metric("Bowler", sel_row["bowler"])
-    sc4.metric(f"P({team} win)", f"{sel_row['wp_team']:.0%}")
-    st.caption(f"Non-striker: {sel_row['non_striker']}")
+    # Overs come from legal balls bowled, not the picker's ball number: an
+    # over containing a wide reaches ball 7 but still only 6 legal balls.
+    legal_bowled = BALLS_PER_INNINGS - int(sel_row["balls_remaining"])
+    overs_txt = f"{legal_bowled // 6}.{legal_bowled % 6}"
+
+    st.markdown(f"#### Current situation — {bat_team} batting")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Score", f"{int(sel_row['score'])}/{wickets_fallen}")
+    s2.metric("Overs bowled", overs_txt)
+    s3.metric(f"P({team} win) here", f"{sel_row['wp_team']:.0%}")
+
+    if int(sel_row["is_second_innings"]) == 1:
+        st.markdown(
+            f"**Chasing:** needs **{int(sel_row['runs_required'])}** runs from "
+            f"**{int(sel_row['balls_remaining'])}** balls"
+        )
+
+    if pd.notna(sel_row["is_wicket"]) and bool(sel_row["is_wicket"]):
+        outcome = "wicket falls"
+    else:
+        runs_off_bat = (int(sel_row["runs_batter"])
+                        if pd.notna(sel_row["runs_batter"]) else 0)
+        outcome = f"{runs_off_bat} off the bat"
+    st.caption(
+        f"On strike: {sel_row['batter']}  ·  Non-striker: "
+        f"{sel_row['non_striker']}  ·  Bowler: {sel_row['bowler']}  ·  "
+        f"This ball: {outcome}"
+    )
 
 
 def _default_venue_par(features) -> float:
