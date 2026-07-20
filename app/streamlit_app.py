@@ -343,11 +343,12 @@ def win_probability_calculator(features, model) -> None:
             f"{feats['current_run_rate'].iloc[0]:.2f})."
         )
     else:
+        # projected_score is CRR x 20 by construction, so showing it alongside
+        # CRR restates the same number and reads as an under-forecast.
         st.write(
             f"**Batting first:** {score}/{wickets_fallen} after "
             f"{overs_done} overs (CRR "
-            f"{feats['current_run_rate'].iloc[0]:.2f}, projected "
-            f"{feats['projected_score'].iloc[0]:.0f})."
+            f"{feats['current_run_rate'].iloc[0]:.2f})."
         )
 
     with st.expander("Model input features"):
