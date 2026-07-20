@@ -85,7 +85,11 @@ def build_match_trajectory(features, balls, match_id, model) -> pd.DataFrame:
     ].copy()
     b = b.sort_values(["innings"], kind="stable")
     b["ball_seq"] = b.groupby(["match_id", "innings"], sort=False).cumcount() + 1
-    events = b[["match_id", "innings", "ball_seq", "is_wicket", "runs_batter"]]
+    event_cols = ["match_id", "innings", "ball_seq", "is_wicket", "runs_batter"]
+    # Extras are optional so a caller can still pass a slim ``balls`` frame;
+    # when present they let the caller tell a wide/no-ball from a dot ball.
+    event_cols += [c for c in ("wides", "noballs") if c in b.columns]
+    events = b[event_cols]
     traj = fm.merge(events, on=["match_id", "innings", "ball_seq"], how="left")
     traj["wp"] = predict_win_prob(model, traj[FEATURE_COLS])
     return traj.sort_values(["innings", "ball_seq"]).reset_index(drop=True)

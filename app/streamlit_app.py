@@ -123,7 +123,7 @@ def load_frames():
     balls = pd.read_parquet(
         DATA / "balls.parquet",
         columns=["match_id", "innings", "is_super_over",
-                 "is_wicket", "runs_batter"],
+                 "is_wicket", "runs_batter", "wides", "noballs"],
     )
     return matches, features, balls
 
@@ -237,7 +237,9 @@ def explore_match(matches, features, balls, model) -> None:
     with pick_ball:
         # An over runs past 6 balls when it contains a wide or a no-ball.
         ball_choice = st.select_slider(
-            "Ball in the over", options=balls_present, format_func=str)
+            "Ball in the over", options=balls_present, format_func=str,
+            help="Counts deliveries bowled, not legal balls — an over runs "
+                 "past 6 when it contains a wide or a no-ball.")
 
     sel_row = df_inn[
         (df_inn["over"] == over_choice) & (df_inn["ball_in_over"] == ball_choice)
@@ -292,12 +294,25 @@ def explore_match(matches, features, balls, model) -> None:
             f"**{int(sel_row['balls_remaining'])}** balls"
         )
 
-    if pd.notna(sel_row["is_wicket"]) and bool(sel_row["is_wicket"]):
-        outcome = "wicket falls"
+    def _delivery_extra(col: str) -> int:
+        """Extras count for the selected ball, 0 if the column is absent."""
+        if col not in sel_row.index or pd.isna(sel_row[col]):
+            return 0
+        return int(sel_row[col])
+
+    # A wide/no-ball is not a dot ball, and a run-out can still happen on
+    # one, so extras and the wicket flag are reported independently.
+    if _delivery_extra("wides"):
+        parts = ["wide"]
+    elif _delivery_extra("noballs"):
+        parts = ["no-ball"]
     else:
         runs_off_bat = (int(sel_row["runs_batter"])
                         if pd.notna(sel_row["runs_batter"]) else 0)
-        outcome = f"{runs_off_bat} off the bat"
+        parts = [f"{runs_off_bat} off the bat"]
+    if pd.notna(sel_row["is_wicket"]) and bool(sel_row["is_wicket"]):
+        parts.append("wicket falls")
+    outcome = ", ".join(parts)
     st.caption(
         f"On strike: {sel_row['batter']}  ·  Non-striker: "
         f"{sel_row['non_striker']}  ·  Bowler: {sel_row['bowler']}  ·  "
