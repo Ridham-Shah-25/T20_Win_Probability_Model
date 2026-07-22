@@ -238,12 +238,12 @@ def explore_match(matches, features, balls, model) -> None:
     swing_row = df.loc[swing_i]
 
     c1, c2 = st.columns(2)
-    c1.metric(f"Lowest P({low_team} win)", f"{low_persp.loc[low_i]:.0%}",
+    c1.metric(f"Lowest P({low_team} win)", f"{low_persp.loc[low_i]:.2%}",
               help=f"The lowest the eventual winner fell to — at over "
                    f"{_over_label(low_row)}, {low_row['batting_team']} "
                    f"{int(low_row['score'])}/"
                    f"{10 - int(low_row['wickets_in_hand'])}.")
-    c2.metric("Biggest swing (one ball)", f"{swings.loc[swing_i]:.0%}",
+    c2.metric("Biggest swing (one ball)", f"{swings.loc[swing_i]:.2%}",
               help=f"Largest win-probability change on a single delivery — "
                    f"over {_over_label(swing_row)}, {swing_row['batter']} vs "
                    f"{swing_row['bowler']}.")
@@ -334,7 +334,7 @@ def explore_match(matches, features, balls, model) -> None:
     s1, s2, s3 = st.columns(3)
     s1.metric("Score", f"{int(sel_row['score'])}/{wickets_fallen}")
     s2.metric("Overs bowled", _over_label(sel_row))
-    s3.metric(f"P({team} win) here", f"{sel_row['wp_team']:.0%}")
+    s3.metric(f"P({team} win) here", f"{sel_row['wp_team']:.2%}")
 
     if int(sel_row["is_second_innings"]) == 1:
         runs_req = int(sel_row["runs_required"])
@@ -512,8 +512,8 @@ def win_probability_calculator(features, model) -> None:
     wp = float(predict_win_prob(model, feats)[0])
 
     c1, c2 = st.columns(2)
-    c1.metric("P(batting team wins)", f"{wp:.0%}")
-    c2.metric("P(bowling team wins)", f"{1 - wp:.0%}")
+    c1.metric("P(batting team wins)", f"{wp:.2%}")
+    c2.metric("P(bowling team wins)", f"{1 - wp:.2%}")
 
     balls_left = int(feats["balls_remaining"].iloc[0])
     if innings == 2:
