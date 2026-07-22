@@ -188,6 +188,13 @@ def explore_match(matches, features, balls, model) -> None:
     # build_match_trajectory already returns rows sorted by (innings, ball_seq)
     # with a fresh 0..n-1 index, so no re-sort is needed here.
     df = traj
+    # A chase that has reached its target is a decided win, but the calibrated
+    # model saturates near — never at — certainty, so it read ~2% for the
+    # losing side even after the winning run was hit. Pin those terminal states
+    # to the fact (the batting side has won) so the metric and chart both land
+    # at 0/100% rather than the model's residual probability.
+    chase_won = (df["is_second_innings"] == 1) & (df["runs_required"] <= 0)
+    df.loc[chase_won, "wp"] = 1.0
     df["wp_team"] = np.where(df["batting_team"] == team, df["wp"], 1.0 - df["wp"])
     x = np.arange(len(df))
 
@@ -246,8 +253,11 @@ def explore_match(matches, features, balls, model) -> None:
     chart_slot = st.empty()
 
     # --- pick a delivery ---
-    # Sliders rather than dropdowns: every value stays on screen instead of
-    # hiding behind a popup, which got clipped in the narrow sidebar.
+    # Dropdowns rather than sliders: a slider only labels its endpoints, so
+    # jumping to a specific over/ball meant guessing where to drag. The
+    # dropdown lists every available value and lets you pick one directly.
+    # (The clipping that once ruled dropdowns out only affected the narrow
+    # sidebar; this picker sits in the full-width main column.)
     st.divider()
     st.subheader("Jump to any point in the match")
     st.caption(
@@ -270,7 +280,7 @@ def explore_match(matches, features, balls, model) -> None:
     overs_present = sorted(int(o) for o in df_inn["over"].unique())
     with pick_over:
         # `over` is 0-indexed in the data; show it as the 1-based over number.
-        over_choice = st.select_slider(
+        over_choice = st.selectbox(
             "Over", options=overs_present, format_func=lambda o: str(o + 1))
     balls_present = sorted(
         int(b) for b in
@@ -278,7 +288,7 @@ def explore_match(matches, features, balls, model) -> None:
     )
     with pick_ball:
         # An over runs past 6 balls when it contains a wide or a no-ball.
-        ball_choice = st.select_slider(
+        ball_choice = st.selectbox(
             "Ball in the over", options=balls_present, format_func=str,
             help="Counts deliveries bowled, not legal balls — an over runs "
                  "past 6 when it contains a wide or a no-ball.")
@@ -327,10 +337,23 @@ def explore_match(matches, features, balls, model) -> None:
     s3.metric(f"P({team} win) here", f"{sel_row['wp_team']:.0%}")
 
     if int(sel_row["is_second_innings"]) == 1:
-        st.markdown(
-            f"**Chasing:** needs **{int(sel_row['runs_required'])}** runs from "
-            f"**{int(sel_row['balls_remaining'])}** balls"
-        )
+        runs_req = int(sel_row["runs_required"])
+        balls_left = int(sel_row["balls_remaining"])
+        # State is read *after* the delivery, so a decided chase can land here:
+        # target already reached (runs_req <= 0) or the innings out of balls.
+        # Report the outcome instead of "needs -5 runs from 2 balls".
+        if runs_req <= 0:
+            st.markdown(f"**Target reached** — {bat_team} have won the chase.")
+        elif balls_left == 0:
+            st.markdown(
+                f"**Chase ended** — {bat_team} finished **{runs_req}** short "
+                f"of the target."
+            )
+        else:
+            st.markdown(
+                f"**Chasing:** needs **{runs_req}** run{'' if runs_req == 1 else 's'} "
+                f"from **{balls_left}** ball{'' if balls_left == 1 else 's'}"
+            )
 
     def _delivery_extra(col: str) -> int:
         """Extras count for the selected ball, 0 if the column is absent."""
