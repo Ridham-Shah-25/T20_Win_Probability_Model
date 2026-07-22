@@ -339,14 +339,19 @@ def explore_match(matches, features, balls, model) -> None:
         return int(sel_row[col])
 
     # A wide/no-ball is not a dot ball, and a run-out can still happen on
-    # one, so extras and the wicket flag are reported independently.
-    if _delivery_extra("wides"):
-        parts = ["wide"]
-    elif _delivery_extra("noballs"):
+    # one, so extras and the wicket flag are reported independently. Runs off
+    # the bat still count on a no-ball, so surface them alongside it.
+    runs_off_bat = (int(sel_row["runs_batter"])
+                    if pd.notna(sel_row["runs_batter"]) else 0)
+    wides = _delivery_extra("wides")
+    noballs = _delivery_extra("noballs")
+    if wides:
+        parts = ["wide" if wides == 1 else f"wide ({wides} runs)"]
+    elif noballs:
         parts = ["no-ball"]
+        if runs_off_bat:
+            parts.append(f"{runs_off_bat} off the bat")
     else:
-        runs_off_bat = (int(sel_row["runs_batter"])
-                        if pd.notna(sel_row["runs_batter"]) else 0)
         parts = [f"{runs_off_bat} off the bat"]
     if pd.notna(sel_row["is_wicket"]) and bool(sel_row["is_wicket"]):
         parts.append("wicket falls")
@@ -431,6 +436,24 @@ def win_probability_calculator(features, model) -> None:
             if not is_ipl else False
         )
 
+    # A team cannot score before a ball is bowled, nor more than six off every
+    # legal ball. Guard both: the model was never trained on physically
+    # impossible states, and their run rate (6·score / 0 balls) is nonsense
+    # (e.g. 90 off 0 balls read as "CRR 540.00", P(win) 94%).
+    if legal_balls == 0 and score > 0:
+        st.warning(
+            f"{score} runs off 0 balls is impossible — set at least one "
+            "completed over or ball bowled."
+        )
+        return
+    if score > 6 * legal_balls:
+        st.warning(
+            f"{score} runs is impossible off {legal_balls} balls (a maximum "
+            f"of {6 * legal_balls} — six off every ball). Adjust the score, "
+            "overs or balls."
+        )
+        return
+
     # A chase can be terminally decided by the game state, in which case the
     # model should not be consulted at all (those states are win/loss facts,
     # and out-of-balls/out-of-wickets losing states never appear in training).
@@ -466,16 +489,21 @@ def win_probability_calculator(features, model) -> None:
     wp = float(predict_win_prob(model, feats)[0])
 
     c1, c2 = st.columns(2)
-    c1.metric("P(batting team wins)", f"{wp:.1%}")
-    c2.metric("P(bowling team wins)", f"{1 - wp:.1%}")
+    c1.metric("P(batting team wins)", f"{wp:.0%}")
+    c2.metric("P(bowling team wins)", f"{1 - wp:.0%}")
 
     balls_left = int(feats["balls_remaining"].iloc[0])
     if innings == 2:
+        # Display the *true* required rate, not the model's capped feature:
+        # required_run_rate is clipped to RRR_CAP (36) as a model input, which
+        # would misreport a steep chase (40 off 6 → 36.00 instead of 40.00).
+        runs_needed = int(target) - score
+        true_rrr = 6 * runs_needed / balls_left
         st.write(
             f"**Chasing:** {score}/{wickets_fallen} after "
-            f"{overs_done} overs, needing {int(target) - score} from "
+            f"{overs_done} overs, needing {runs_needed} from "
             f"{balls_left} balls (RRR "
-            f"{feats['required_run_rate'].iloc[0]:.2f}, CRR "
+            f"{true_rrr:.2f}, CRR "
             f"{feats['current_run_rate'].iloc[0]:.2f})."
         )
     else:
