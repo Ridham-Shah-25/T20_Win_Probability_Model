@@ -1,5 +1,7 @@
 # T20 Win Probability Model
 
+**🏏 Live app: [t20winprobabilitymodel.streamlit.app](https://t20winprobabilitymodel.streamlit.app/)** — the interactive implementation of this project.
+
 Ball-by-ball win probability for T20 cricket. The model predicts **P(the
 current batting team wins)** after every legal and illegal delivery of a match,
 trained on public [Cricsheet](https://cricsheet.org/) data (IPL + men's T20
