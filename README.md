@@ -1,5 +1,7 @@
 # T20 Win Probability Model
 
+**Built a ball-by-ball T20 win-probability model on 1M+ deliveries, rigorously benchmarked on log loss (0.436), Brier score (0.145), and calibration error (ECE ≈ 0.02) under a strict time-based split — then turned the calibrated probabilities into a "Win Probability Added" clutch metric that ranks the batters and bowlers who most swing matches, shipped as a live Streamlit app.**
+
 **🏏 Live app: [t20winprobabilitymodel.streamlit.app](https://t20winprobabilitymodel.streamlit.app/)** — the interactive implementation of this project.
 
 Ball-by-ball win probability for T20 cricket. The model predicts **P(the
